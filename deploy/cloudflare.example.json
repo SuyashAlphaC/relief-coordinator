@@ -1,0 +1,6 @@
+{
+  "name": "relief-desk",
+  "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+  "access_issuer": "https://YOUR-TEAM.cloudflareaccess.com",
+  "access_audience": "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+}
