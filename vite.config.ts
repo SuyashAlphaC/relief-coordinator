@@ -27,6 +27,7 @@ const localBindingConfig = {
         },
       ]
     : [],
+  services: [{ binding: "CLOUD", service: "relief-desk-cloud" }],
   r2_buckets: r2
     ? [
         {
@@ -64,6 +65,7 @@ export default defineConfig(async ({ command }) => {
           ...(command === "serve"
             ? {
                 services: [
+                  { binding: "CLOUD", service: "relief-desk-cloud" },
                   {
                     binding: "CONNECTORS",
                     service: "sites-connector-preview",
@@ -76,6 +78,7 @@ export default defineConfig(async ({ command }) => {
         ...(command === "serve"
           ? {
               auxiliaryWorkers: [
+                { configPath: "./cloud/wrangler.json" },
                 {
                   config: {
                     name: "sites-connector-preview",

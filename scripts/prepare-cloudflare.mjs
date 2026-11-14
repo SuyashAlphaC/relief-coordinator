@@ -23,6 +23,10 @@ config.d1_databases = [
     migrations_dir: "../../drizzle",
   },
 ];
+config.services = [
+  ...(config.services || []).filter((s) => s.binding !== "CLOUD"),
+  { binding: "CLOUD", service: "relief-desk-cloud" },
+];
 config.vars = {
   ...config.vars,
   AUTH_MODE: "cloudflare-access",
@@ -36,4 +40,13 @@ writeFileSync(
 );
 console.log(
   "Prepared dist/server/wrangler.free.json. Access JWT validation is required on every request.",
+);
+
+const cloud = JSON.parse(readFileSync("cloud/wrangler.json", "utf8"));
+cloud.d1_databases = [
+  { binding: "DB", database_name: input.name, database_id: input.database_id },
+];
+writeFileSync(
+  "cloud/wrangler.production.json",
+  JSON.stringify(cloud, null, 2) + "\n",
 );

@@ -1,3 +1,4 @@
+import { assignIncident } from "@/lib/auto-assignment";
 import { receiptIdentity, priorReceipt } from "@/lib/idempotency";
 import { database, identity, failure, ApiError, audit } from "@/lib/server";
 import { actionInput, transitions } from "@/lib/validation";
@@ -33,7 +34,9 @@ export async function POST(request: Request) {
     if (!["incident", "request"].includes(a.action) && u.role === "reporter")
       throw new ApiError(403, "Responder access required.");
     if (
-      ["team", "resource", "restock", "role"].includes(a.action) &&
+      ["team", "team_position", "resource", "restock", "role"].includes(
+        a.action,
+      ) &&
       u.role !== "coordinator"
     )
       throw new ApiError(403, "Coordinator access required.");
@@ -44,7 +47,7 @@ export async function POST(request: Request) {
         const d = a.data;
         stmt = db
           .prepare(
-            "INSERT INTO incidents (id,title,type,severity,location,lat,lng,description,people,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO incidents (id,title,type,severity,location,lat,lng,description,people,created_by,created_at,assignment_state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
           )
           .bind(
             id,
@@ -58,17 +61,46 @@ export async function POST(request: Request) {
             d.people,
             u.id,
             now,
+            d.lat === null ? "needs_location" : "pending",
           );
         message = `Reported ${d.title}`;
         break;
       }
       case "team":
+        if ((a.lat === null) !== (a.lng === null))
+          throw new ApiError(400, "Provide both team coordinates or neither.");
         stmt = db
           .prepare(
-            "INSERT INTO teams (id,name,specialty,personnel,location) VALUES (?,?,?,?,?)",
+            "INSERT INTO teams (id,name,specialty,personnel,location,lat,lng,available) VALUES (?,?,?,?,?,?,?,?)",
           )
-          .bind(id, a.name, a.specialty, a.personnel, a.location);
+          .bind(
+            id,
+            a.name,
+            a.specialty,
+            a.personnel,
+            a.location,
+            a.lat,
+            a.lng,
+            Number(a.available),
+          );
         message = `Added team ${a.name}`;
+        break;
+      case "team_position":
+        stmt = db
+          .prepare(
+            "UPDATE teams SET location=?,lat=?,lng=?,available=?,version=version+1 WHERE id=? AND version=?",
+          )
+          .bind(a.location, a.lat, a.lng, Number(a.available), a.id, a.version);
+        message = "Updated team location and availability";
+        break;
+      case "incident_position":
+        stmt = db
+          .prepare(
+            "UPDATE incidents SET lat=?,lng=?,assignment_state='pending',assignment_checked_at=NULL,version=version+1 WHERE id=? AND version=? AND team_id IS NULL AND status!='resolved'",
+          )
+          .bind(a.lat, a.lng, a.id, a.version);
+        message =
+          "Updated incident coordinates; requested nearest-team assignment";
         break;
       case "resource":
         stmt = db
@@ -90,7 +122,14 @@ export async function POST(request: Request) {
         const old = await db
           .prepare("SELECT * FROM incidents WHERE id=?")
           .bind(a.id)
-          .first<{ status: string; title: string }>();
+          .first<{
+            status: string;
+            title: string;
+            team_id: string | null;
+            assignment_state: string;
+            assigned_at: string | null;
+            assignment_distance_km: number | null;
+          }>();
         if (!old) throw new ApiError(404, "Incident not found.");
         if (
           old.status !== a.status &&
@@ -110,11 +149,26 @@ export async function POST(request: Request) {
             .first())
         )
           throw new ApiError(400, "Team not found.");
+        const unchangedTeam = old.team_id === a.teamId;
+        const assignmentState =
+          a.automatic && !a.teamId
+            ? "pending"
+            : unchangedTeam && a.teamId
+              ? old.assignment_state
+              : "manual";
         stmt = db
           .prepare(
-            "UPDATE incidents SET status=?,team_id=?,version=version+1 WHERE id=? AND version=?",
+            "UPDATE incidents SET status=?,team_id=?,assignment_state=?,assigned_at=?,assignment_distance_km=?,assignment_checked_at=NULL,version=version+1 WHERE id=? AND version=?",
           )
-          .bind(a.status, a.teamId, a.id, a.version);
+          .bind(
+            a.status,
+            a.teamId,
+            assignmentState,
+            a.teamId ? (unchangedTeam ? old.assigned_at : now) : null,
+            unchangedTeam ? old.assignment_distance_km : null,
+            a.id,
+            a.version,
+          );
         message = `${old.title}: ${a.status}`;
         break;
       }
@@ -199,8 +253,30 @@ export async function POST(request: Request) {
         409,
         "This record changed or no longer exists. Refresh and try again.",
       );
+    if (
+      a.action === "incident" ||
+      a.action === "incident_position" ||
+      (a.action === "status" && a.automatic && !a.teamId)
+    ) {
+      try {
+        await assignIncident(db, a.action === "incident" ? id : a.id);
+      } catch (error) {
+        console.error(
+          "Immediate assignment deferred to scheduled retry",
+          String(error),
+        );
+      }
+    }
     return Response.json({ ok: true, id });
   } catch (e) {
+    if (e instanceof Error && /TEAM_BUSY|TEAM_UNAVAILABLE/.test(e.message))
+      return Response.json(
+        {
+          error:
+            "This team is unavailable or already assigned to another active incident. Refresh and choose a free team.",
+        },
+        { status: 409 },
+      );
     if (e instanceof Error && e.message.includes("LAST_COORDINATOR"))
       return Response.json(
         { error: "At least one coordinator must remain." },

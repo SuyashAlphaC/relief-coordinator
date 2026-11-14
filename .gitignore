@@ -48,3 +48,15 @@ yarn-error.log*
 /playwright-report/
 *.tsbuildinfo
 /deploy/cloudflare.local.json
+
+/cloud/wrangler.production.json
+
+# LaTeX compilation intermediates (keep authored .tex and presentation PDFs)
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb
+*.synctex.gz

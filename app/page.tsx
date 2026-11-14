@@ -22,7 +22,16 @@ import {
   X,
   Check,
   TriangleAlert,
+  Bell,
 } from "lucide-react";
+import { useLive } from "@/hooks/use-live";
+import { IncidentFiles } from "@/components/relief/incident-files";
+import {
+  ResponseCover,
+  ResponseNetwork,
+} from "@/components/relief/network-overview";
+import { Coordinates, assignmentLabel } from "@/components/relief/coordinates";
+import { Alerts } from "@/components/relief/alerts";
 type Row = Record<string, any>;
 type State = {
   user: Row;
@@ -32,6 +41,9 @@ type State = {
   requests: Row[];
   activity: Row[];
   members: Row[];
+  notifications: any[];
+  job_runs: Row[];
+  cloudEnabled: boolean;
 };
 const tabs = [
   ["Overview", Activity],
@@ -39,6 +51,7 @@ const tabs = [
   ["Relief requests", ClipboardList],
   ["Resources", Boxes],
   ["Response teams", Users],
+  ["Alerts", Bell],
   ["Access", Shield],
 ] as const;
 const label = (s: string) =>
@@ -63,24 +76,44 @@ export default function Home() {
     [selected, setSelected] = useState<Row | null>(null),
     [error, setError] = useState(""),
     [syncError, setSyncError] = useState(""),
+    [sessionRequired, setSessionRequired] = useState(false),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
     [online, setOnline] = useState(false),
-    [live, setLive] = useState(false),
     [lastSync, setLastSync] = useState("");
   const dialog = useRef<HTMLDialogElement>(null),
     fetching = useRef(false),
+    sessionExpired = useRef(false),
+    refreshPending = useRef(false),
     attempt = useRef<{ body: string; key: string } | null>(null);
   const refresh = useCallback(async () => {
-    if (fetching.current) return;
+    if (fetching.current) {
+      refreshPending.current = true;
+      return;
+    }
     fetching.current = true;
     try {
       const r = await fetch("/api/state", {
         cache: "no-store",
+        redirect: "manual",
         signal: AbortSignal.timeout(10000),
       });
+      if (r.type === "opaqueredirect" || r.status === 401 || r.status === 302) {
+        sessionExpired.current = true;
+        setSessionRequired(true);
+        throw new Error(
+          "Your sign-in session has expired or is unavailable. Sign in again to resume live updates. Previously loaded data may be out of date.",
+        );
+      }
+      if (!r.headers.get("content-type")?.includes("application/json"))
+        throw new Error(
+          "The server returned an unexpected response. Reload the page, or sign in again.",
+        );
       const d: any = await r.json();
-      if (!r.ok) throw new Error(d.error);
+      if (!r.ok)
+        throw new Error(d.error || `Unable to refresh data (${r.status}).`);
+      sessionExpired.current = false;
+      setSessionRequired(false);
       setState(d);
       setOnline(true);
       setSyncError("");
@@ -92,18 +125,29 @@ export default function Home() {
       );
     } catch (e) {
       setOnline(false);
-      setSyncError((e as Error).message);
+      const failure = e as Error;
+      setSyncError(
+        failure.name === "TypeError"
+          ? "Unable to reach the app. Check your connection, then retry or reload to renew your sign-in. Previously loaded data may be out of date."
+          : failure.name === "TimeoutError"
+            ? "The data refresh timed out. Please retry; previously loaded data may be out of date."
+            : failure.message,
+      );
     } finally {
       fetching.current = false;
+      if (refreshPending.current && !sessionExpired.current) {
+        refreshPending.current = false;
+        void refresh();
+      }
     }
   }, []);
   useEffect(() => {
     refresh();
     const timer = setInterval(() => {
-      if (!document.hidden) refresh();
+      if (!document.hidden && !sessionExpired.current) refresh();
     }, 30000);
     const wake = () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden && !sessionExpired.current) refresh();
     };
     document.addEventListener("visibilitychange", wake);
     window.addEventListener("online", wake);
@@ -113,29 +157,22 @@ export default function Home() {
       window.removeEventListener("online", wake);
     };
   }, [refresh]);
-  useEffect(() => {
-    if (!state) return;
-    let source: EventSource | null = null;
-    const connect = () => {
-      source?.close();
-      setLive(false);
-      if (document.hidden) return;
-      source = new EventSource("/api/events");
-      source.onopen = () => setLive(true);
-      source.onerror = () => setLive(false);
-      source.addEventListener("update", () => refresh());
-    };
-    connect();
-    document.addEventListener("visibilitychange", connect);
-    return () => {
-      source?.close();
-      document.removeEventListener("visibilitychange", connect);
-    };
-  }, [!!state, refresh]);
+  const { live, peers } = useLive(
+    !!state && !sessionRequired,
+    !!state?.cloudEnabled,
+    refresh,
+  );
   useEffect(() => {
     if (modal) dialog.current?.showModal();
     else dialog.current?.close();
   }, [modal]);
+  useEffect(() => {
+    if (modal === "detail" && state)
+      setSelected(
+        (previous) =>
+          state.incidents.find((i) => i.id === previous?.id) || previous,
+      );
+  }, [state, modal]);
   const open = (kind: string, row: Row | null = null) => {
     setSelected(row);
     setError("");
@@ -188,8 +225,17 @@ export default function Home() {
     if (["resource", "restock", "request"].includes(modal || ""))
       a.quantity = Number(data.quantity);
     if (modal === "team") a.personnel = Number(data.personnel);
+    if (["team", "team_position", "incident_position"].includes(modal || "")) {
+      a.lat = data.lat === "" ? null : Number(data.lat);
+      a.lng = data.lng === "" ? null : Number(data.lng);
+    }
+    if (["team", "team_position"].includes(modal || ""))
+      a.available = data.available === "on";
     if (selected) a = { ...a, id: selected.id, version: selected.version };
-    if (modal === "status") a.teamId = data.teamId || null;
+    if (modal === "status") {
+      a.teamId = data.teamId || null;
+      a.automatic = data.automatic === "on";
+    }
     await mutate(a);
   }
   const incidents = state?.incidents || [],
@@ -253,6 +299,7 @@ export default function Home() {
                   {state?.teams.find((t) => t.id === i.team_id)?.name || (
                     <span className="muted">Unassigned</span>
                   )}
+                  <small>{assignmentLabel(i)}</small>
                 </td>
                 <td>
                   <button
@@ -307,6 +354,13 @@ export default function Home() {
             <small>EMERGENCY COORDINATION</small>
           </span>
         </a>
+        <button
+          className="sidebar-report"
+          disabled={!state}
+          onClick={() => open("incident")}
+        >
+          New incident <ArrowUpRight size={17} />
+        </button>
         <div className="workspace">
           <span className="workspace-icon">RD</span>
           <div>
@@ -361,13 +415,21 @@ export default function Home() {
             <strong>{tab}</strong>
           </div>
           <div className="connection">
+            {state?.cloudEnabled && (
+              <span title={peers.map((p) => p.name).join(", ")}>
+                {peers.length} online
+              </span>
+            )}
             <span className={online ? "dot" : "dot offline"} />
             {online
               ? `${live ? "Live updates" : "Reconnecting"} · ${lastSync}`
               : "Connection unavailable"}
           </div>
         </header>
-        <main id="main">
+        <main
+          id="main"
+          className={tab === "Overview" ? "overview-page" : "operations-page"}
+        >
           <div className="page-heading">
             <div>
               <div className="eyebrow">RELIEF DESK / OPERATIONS</div>
@@ -386,6 +448,8 @@ export default function Home() {
                         "Track available stock across your relief network.",
                       "Response teams":
                         "Know who is ready and where they are needed.",
+                      Alerts:
+                        "Review urgent incidents, overdue requests, and low supplies.",
                       Access:
                         "Manage responsibilities within your coordination workspace.",
                     }[tab]}
@@ -420,9 +484,9 @@ export default function Home() {
               >
                 Retry
               </button>
-              {!state && (
+              {(!state || sessionRequired) && (
                 <a href="/signin-with-chatgpt?return_to=%2F" target="_top">
-                  Sign in
+                  {sessionRequired ? "Sign in again" : "Sign in"}
                 </a>
               )}
             </div>
@@ -449,7 +513,28 @@ export default function Home() {
             <>
               {tab === "Overview" && (
                 <>
-                  <section className="metrics">
+                  <ResponseCover
+                    active={active.length}
+                    teams={state.teams.length}
+                    onExplore={() =>
+                      document.getElementById("network")?.scrollIntoView({
+                        behavior: window.matchMedia(
+                          "(prefers-reduced-motion: reduce)",
+                        ).matches
+                          ? "instant"
+                          : "smooth",
+                      })
+                    }
+                  />
+                  <div className="section-intro metrics-intro">
+                    <span className="eyebrow">THE RESPONSE AT A GLANCE</span>
+                    <h2>
+                      See it. Prioritize it.
+                      <br />
+                      <span>Move relief forward.</span>
+                    </h2>
+                  </div>
+                  <section className="metrics" aria-label="Workspace totals">
                     {[
                       [
                         "Active incidents",
@@ -488,9 +573,31 @@ export default function Home() {
                         </div>
                         <strong>{value.toLocaleString()}</strong>
                         <small>{sub}</small>
+                        <div className="metric-foot">
+                          <span>0{i + 1}</span>
+                          <span>RELIEF DESK</span>
+                        </div>
                       </div>
                     ))}
                   </section>
+                  <ResponseNetwork
+                    onNavigate={setTab}
+                    active={active.length}
+                    pending={pending.length}
+                    teams={state.teams.length}
+                    resources={state.resources.length}
+                  />
+                  <div className="section-intro operations-intro">
+                    <h2>
+                      On the ground.
+                      <br />
+                      In the loop.
+                    </h2>
+                    <p>
+                      Follow urgent reports and the latest actions from your
+                      coordination team.
+                    </p>
+                  </div>
                   <div className="overview-grid">
                     <section className="panel">
                       <div className="panel-heading">
@@ -569,7 +676,7 @@ export default function Home() {
                   </section>
                 </>
               )}
-              {tab !== "Overview" && tab !== "Access" && (
+              {tab !== "Overview" && tab !== "Access" && tab !== "Alerts" && (
                 <div className="toolbar">
                   <label className="search">
                     <Search size={17} />
@@ -677,6 +784,26 @@ export default function Home() {
                         <MapPin size={14} />
                         {t.location}
                       </p>
+                      <p>
+                        {t.lat != null && t.lng != null
+                          ? `${Number(t.lat).toFixed(4)}, ${Number(t.lng).toFixed(4)}`
+                          : "Coordinates needed for automatic assignment"}
+                      </p>
+                      <p>
+                        {!t.available
+                          ? "Off duty"
+                          : active.some((i) => i.team_id === t.id)
+                            ? "Busy · assigned to an active incident"
+                            : "Available"}
+                      </p>
+                      {canManage && (
+                        <button
+                          className="secondary full"
+                          onClick={() => open("team_position", t)}
+                        >
+                          Update location / availability
+                        </button>
+                      )}
                     </article>
                   ))}
                   {!matching(state.teams).length && (
@@ -755,6 +882,21 @@ export default function Home() {
                   )}
                 </section>
               )}
+              {tab === "Alerts" && (
+                <Alerts
+                  items={state.notifications || []}
+                  role={role}
+                  lastRun={
+                    state.job_runs?.find((j) => j.id === "escalations")
+                      ?.last_run
+                  }
+                  onRefresh={refresh}
+                  onIncident={(id) => {
+                    const row = incidents.find((i) => i.id === id);
+                    if (row) open("detail", row);
+                  }}
+                />
+              )}
               {tab === "Access" && canManage && (
                 <section className="panel table-scroll">
                   <table>
@@ -798,6 +940,11 @@ export default function Home() {
               )}
             </>
           )}
+          <div className="closing-statement">
+            Your response,
+            <br />
+            <span>connected.</span>
+          </div>
           <footer>
             <span>RELIEF DESK</span>
             <span>Shared awareness. Coordinated action.</span>
@@ -835,6 +982,8 @@ export default function Home() {
                   resource: "Register relief supplies",
                   restock: "Restock supplies",
                   team: "Add a response team",
+                  team_position: "Team location and availability",
+                  incident_position: "Locate incident for assignment",
                   request: "Request relief",
                   fulfill: "Confirm supply dispatch",
                   cancel: "Cancel relief request",
@@ -854,6 +1003,14 @@ export default function Home() {
               <Badge value={selected.status} />
             </div>
             <p>{selected.description}</p>
+            {state && (
+              <IncidentFiles
+                incident={selected.id}
+                user={state.user as { id: string; role: string }}
+                cloud={state.cloudEnabled}
+                revision={state.activity[0]?.id || ""}
+              />
+            )}
             <dl>
               <dt>Location</dt>
               <dd>{selected.location}</dd>
@@ -863,6 +1020,15 @@ export default function Home() {
               <dd>{selected.people}</dd>
               <dt>Reported</dt>
               <dd>{new Date(selected.created_at).toLocaleString()}</dd>
+              <dt>Assignment</dt>
+              <dd>
+                {assignmentLabel(selected)}
+                {selected.assigned_at && (
+                  <small className="assignment-time">
+                    {new Date(selected.assigned_at).toLocaleString()}
+                  </small>
+                )}
+              </dd>
               <dt>Response team</dt>
               <dd>
                 {state?.teams.find((t) => t.id === selected.team_id)?.name ||
@@ -879,6 +1045,16 @@ export default function Home() {
                 View location on map <ArrowUpRight size={16} />
               </a>
             )}
+            {canRespond &&
+              !selected.team_id &&
+              selected.status !== "resolved" && (
+                <button
+                  className="secondary full"
+                  onClick={() => open("incident_position", selected)}
+                >
+                  Set coordinates & auto-assign
+                </button>
+              )}
             {canRespond && selected.status !== "resolved" && (
               <button
                 className="primary full"
@@ -949,28 +1125,43 @@ export default function Home() {
                 >
                   Estimated people affected
                 </Field>
-                <div className="form-grid">
-                  <Field
-                    name="lat"
-                    type="number"
-                    step="any"
-                    min={-90}
-                    max={90}
-                    required={false}
-                  >
-                    Latitude (optional)
-                  </Field>
-                  <Field
-                    name="lng"
-                    type="number"
-                    step="any"
-                    min={-180}
-                    max={180}
-                    required={false}
-                  >
-                    Longitude (optional)
-                  </Field>
-                </div>
+                <Coordinates />
+                <p className="muted assignment-help">
+                  We attempt assignment immediately after saving, then retry
+                  every minute. Only available teams with coordinates and no
+                  active assignment are eligible.
+                </p>
+              </>
+            )}
+            {modal === "team_position" && (
+              <>
+                <p>
+                  Update the team's actual position. Off-duty teams will not
+                  receive new assignments; existing assignments remain.
+                </p>
+                <Field
+                  name="location"
+                  maxLength={120}
+                  defaultValue={selected?.location}
+                />
+                <Coordinates lat={selected?.lat} lng={selected?.lng} required />
+                <label className="availability-check">
+                  <input
+                    type="checkbox"
+                    name="available"
+                    defaultChecked={!!selected?.available}
+                  />
+                  Available for new assignments
+                </label>
+              </>
+            )}
+            {modal === "incident_position" && (
+              <>
+                <Coordinates lat={selected?.lat} lng={selected?.lng} required />
+                <p className="muted">
+                  Saving enables nearest-team assignment for this unassigned
+                  incident.
+                </p>
               </>
             )}
             {modal === "status" && (
@@ -999,13 +1190,41 @@ export default function Home() {
                   <select name="teamId" defaultValue={selected?.team_id || ""}>
                     <option value="">Unassigned</option>
                     {state?.teams.map((t) => (
-                      <option value={t.id} key={t.id}>
+                      <option
+                        value={t.id}
+                        key={t.id}
+                        disabled={
+                          t.id !== selected?.team_id &&
+                          (!t.available ||
+                            active.some(
+                              (i) =>
+                                i.team_id === t.id && i.id !== selected?.id,
+                            ))
+                        }
+                      >
                         {t.name}
+                        {t.id !== selected?.team_id &&
+                        (!t.available ||
+                          active.some(
+                            (i) => i.team_id === t.id && i.id !== selected?.id,
+                          ))
+                          ? " (unavailable)"
+                          : ""}
                       </option>
                     ))}
                   </select>
                 </label>
               </>
+            )}
+            {modal === "status" && (
+              <label className="availability-check">
+                <input
+                  type="checkbox"
+                  name="automatic"
+                  defaultChecked={selected?.assignment_state !== "manual"}
+                />
+                If unassigned, automatically find the nearest team
+              </label>
             )}
             {(modal === "resource" || modal === "team") && (
               <>
@@ -1040,6 +1259,15 @@ export default function Home() {
                     />
                   </>
                 )}
+              </>
+            )}
+            {modal === "team" && (
+              <>
+                <Coordinates />
+                <label className="availability-check">
+                  <input type="checkbox" name="available" defaultChecked />
+                  Available for new assignments
+                </label>
               </>
             )}
             {modal === "restock" && (

@@ -14,12 +14,21 @@ This target uses your own free Cloudflare account. Sites hosting remains an inde
 
 3. In Cloudflare Zero Trust, select the Free plan and configure your team domain. Create a self-hosted Access application for your intended `<worker-name>.<account-subdomain>.workers.dev` hostname, with an Allow policy containing only your course team emails. Use email one-time PIN or your existing identity provider. Copy the application AUD tag and team issuer into `deploy/cloudflare.local.json`.
 
-4. Prepare, migrate, and deploy:
+4. Enable R2 in the dashboard, then provision the private bucket and queues once:
+
+   ```sh
+   npx wrangler r2 bucket create relief-desk-attachments
+   npx wrangler queues create relief-desk-events
+   npx wrangler queues create relief-desk-events-dlq
+   ```
+
+   Prepare, migrate, and deploy the private services Worker before the app:
 
    ```sh
    npm run build
    npm run cloudflare:prepare
    npx wrangler d1 migrations apply DB --remote --config dist/server/wrangler.free.json
+   npx wrangler deploy --config cloud/wrangler.production.json
    npx wrangler deploy --config dist/server/wrangler.free.json
    ```
 
@@ -38,7 +47,15 @@ Official pricing checked during development:
 - Workers Free: 100,000 requests/day, 10 ms CPU/request: https://developers.cloudflare.com/workers/platform/pricing/
 - D1 Free: 5 million rows read/day, 100,000 rows written/day, 5 GB total storage: https://developers.cloudflare.com/d1/platform/pricing/
 
-Live updates use a short server-sent event connection with one indexed revision read per second. Connections renew every 25 seconds; background tabs close them. The browser also refreshes the full workspace every 30 seconds as a fallback. This is sized for a small course demo, not sustained public emergency traffic. Monitor quotas and CPU in the Cloudflare dashboard during your demonstration; free quota exhaustion must be treated as service unavailability. Do not enable paid upgrades automatically.
+Live updates use hibernating Durable Objects and WebSockets, with a 30-second snapshot fallback. R2 stores private incident files; Queues processes in-app notifications; Cron checks every five minutes. The services Worker has no public workers.dev or preview URL. Keep the R2 bucket private.
+
+Check usage in the dashboard. Included quotas are finite, and R2 activation may require billing details. Application storage caps (5 MB/file, 20/incident, 500 MB/workspace) limit stored file data, but do not cap all possible operation charges. No paid Workers upgrade is required by this configuration. Additional references:
+
+- https://developers.cloudflare.com/r2/pricing/
+- https://developers.cloudflare.com/queues/platform/pricing/
+- https://developers.cloudflare.com/durable-objects/platform/pricing/
+
+Migrations 0004 and 0005 are additive. To roll back app code, deploy the previous Worker versions while retaining these tables and stored objects. Do not drop tables or buckets as a code rollback. For failed events, inspect the outbox and dead-letter queue; scheduled scans retry unprocessed events. Old interrupted file transfers are reconciled after one hour.
 
 ## Demo walkthrough
 
@@ -49,3 +66,15 @@ Live updates use a short server-sent event connection with one indexed revision 
 5. Confirm stock fell to 80; a repeated dispatch cannot reduce it again.
 6. Mark Contained, then Resolved. Show the activity log and export.
 7. Demonstrate a reporter cannot restock or change roles, and two requests cannot overdraw the same inventory.
+
+8. Open an incident and upload a PNG/JPG/PDF, download it, then remove it.
+9. Report a critical incident and open Alerts; acknowledge its notification. Use Check now as coordinator to demonstrate stock checks.
+10. Open the app in two browsers and show live workspace presence and incident viewers.
+
+## Assignment rollout (25 October 2026)
+
+Apply additive migrations 0006 and 0007 before deploying either updated Worker. Export D1 before migration. These add coordinates/availability/version to teams, assignment metadata to incidents, transactional assignment audit, and guards against new overlapping team allocations. Legacy data and existing allocations are preserved, including any historical overlapping assignments; no records are deleted or bulk assigned.
+
+Deploy the cloud Worker before the main Worker. Its single cron is now `* * * * *`; assignment recovery runs every minute while escalation checks run on minutes divisible by five. Existing team coordinates must be configured by a coordinator before automatic dispatch is eligible.
+
+For code rollback, retain the additive columns and tables, roll back both Workers, and restore the previous five-minute schedule if needed. The team guards remain active and reject new overlapping assignments from either application version. Do not drop assignment data or disable integrity guards to roll back a UI change.

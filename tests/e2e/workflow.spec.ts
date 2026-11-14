@@ -24,6 +24,8 @@ test("complete coordination workflow, concurrent dispatch, stale updates, and br
     .fill("Simulated flooding; families need clean water and rescue support.");
   await page.getByLabel("Estimated people affected").fill("75");
   await page.getByRole("button", { name: "Save changes" }).click();
+  // The overview shows only six priority reports; inspect the complete list.
+  await page.getByRole("button", { name: "Incidents", exact: true }).click();
   await expect(
     page.getByRole("button", { name: `Test flood ${suffix}`, exact: true }),
   ).toBeVisible();

@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap");
 :root {
   --bg: #f6f7f8;
   --ink: #202d36;
@@ -991,3 +990,4 @@ dialog h2 {
 .table-scroll {
   position: relative;
 }
+.attachments{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:18px 0;margin:18px 0}.attachment-heading,.attachment-heading h3,.attachment-heading>span{display:flex;align-items:center;gap:7px}.attachment-heading{justify-content:space-between}.attachment-heading h3{font-size:13px;margin:0}.attachment-heading>span{font-size:10px;color:var(--muted)}.attachments p{font-size:11px}.upload-row{display:flex;align-items:center;gap:10px}.upload-row input{width:100%;min-width:0;font-size:11px}.attachment-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-top:1px solid var(--line);margin-top:12px}.attachment-row>div{min-width:0}.attachment-row a{display:flex;gap:6px;align-items:center;color:var(--green);font-size:12px;overflow-wrap:anywhere}.attachment-row small{color:var(--muted);font-size:10px}.alert-card{display:flex;align-items:flex-start;gap:15px;padding:22px;border-bottom:1px solid var(--line)}.alert-card:last-child{border-bottom:0}.alert-card>svg{flex-shrink:0;color:#b17e3c}.alert-card p{margin:8px 0;color:#67757d;font-size:12px}.alert-card small{color:var(--muted);font-size:10px}.alert-card .inline-actions{margin-top:12px}.checkbox-label{display:flex;align-items:center;gap:7px;margin-right:auto;color:#67757d;font-size:12px}
